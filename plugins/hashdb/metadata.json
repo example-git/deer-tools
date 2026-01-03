@@ -1,0 +1,12 @@
+{
+  "id": "hashdb",
+  "name": "HashDB Toolbox",
+  "version": "1.0",
+  "description": "Scan, hash, verify, deduplicate and export file checksums.",
+  "category": "File Maintenance",
+  "icon": "&#128451;",
+  "supports_gui": true,
+  "supports_cli": true,
+  "supports_interactive": true,
+  "config_file": "hashdb.json"
+}

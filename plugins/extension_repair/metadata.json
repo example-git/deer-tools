@@ -1,0 +1,12 @@
+{
+  "id": "extension_repair",
+  "name": "Extension Repair Tool",
+  "version": "2.0",
+  "description": "Strict-mode magic-byte extension repair with GUI, diagnostics, conflict-free renaming, quarantine mode, and output-directory support.",
+  "category": "File Maintenance",
+  "icon": "&#128194;",
+  "supports_gui": true,
+  "supports_cli": true,
+  "supports_interactive": true,
+  "config_file": "extension_repair.json"
+}

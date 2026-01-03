@@ -1,0 +1,12 @@
+{
+  "id": "undo_transfer",
+  "name": "Undo Transfer Tool",
+  "version": "1.0",
+  "description": "Restores files to their original folder structure using MD5-based matching, with GUI and CLI support.",
+  "category": "Recovery",
+  "icon": "&#128260;",
+  "supports_gui": true,
+  "supports_cli": true,
+  "supports_interactive": true,
+  "config_file": "undo_transfer.json"
+}

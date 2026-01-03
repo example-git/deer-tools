@@ -1,0 +1,21 @@
+# Deer Toolbox Requirements
+# All dependencies are optional - the toolbox works with stdlib only
+
+# Modern TUI (recommended for best terminal experience)
+rich>=13.0.0
+questionary>=2.0.0
+
+# Web-based GUI (browser interface)
+flask>=3.0.0
+
+# Native desktop GUI wrapper
+pywebview>=4.0.0
+
+# Optional: Enhanced markdown rendering in web UI
+markdown>=3.5.0
+
+# Development / testing
+pytest>=7.0.0
+
+# Note: tkinter is required for legacy GUI modes but is typically included with Python
+# If tkinter is missing, install python3-tk (Debian/Ubuntu) or via your system package manager
