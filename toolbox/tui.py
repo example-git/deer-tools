@@ -121,7 +121,13 @@ def run_fixed_log_ui(
                         frac = ev[1]
                         msg = ev[2] if len(ev) > 2 else ""
                         pct = int((frac or 0) * 100)
-                        progress_line = f"[{pct:3d}%] {msg}"
+                        # Full-width progress with percent pinned right.
+                        right = f"{pct:3d}%"
+                        left_width = max(0, (width - 1) - len(right) - 1)
+                        left = (msg or "")
+                        if len(left) > left_width:
+                            left = ("..." + left[-(left_width - 3) :]) if left_width > 3 else left[-left_width:]
+                        progress_line = f"{left.ljust(left_width)} {right}"[: width - 1]
                     elif kind == "error":
                         status_line = f"Error: {ev[1] if len(ev) > 1 else ''}"[: width - 1]
                     elif kind == "done":

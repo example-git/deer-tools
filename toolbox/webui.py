@@ -31,6 +31,7 @@ import weakref
 import webbrowser
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -95,6 +96,326 @@ _SERVER_THREADS: "weakref.WeakKeyDictionary[ThreadingHTTPServer, threading.Threa
 def _split_command(cmd: str) -> List[str]:
     """Split a shell command string into a list of arguments."""
     return tool_parser.split_command(cmd)
+
+
+_DOCS_FRAME_NAME = "docframe"
+
+
+def _is_within_base_dir(candidate: Path) -> bool:
+    base = Path(_STATE.base_dir).resolve()
+    try:
+        candidate.resolve().relative_to(base)
+        return True
+    except Exception:
+        return False
+
+
+def _safe_repo_relpath(path_s: str) -> Optional[str]:
+    """Normalize a user-provided repo-relative path.
+
+    Returns a POSIX-style relative path (no leading slash) or None if unsafe.
+    """
+    if not path_s:
+        return None
+
+    # Decode + normalize separators and strip leading slashes.
+    raw = path_s.strip().replace("\\", "/")
+    while raw.startswith("/"):
+        raw = raw[1:]
+
+    # Disallow obvious traversal attempts early.
+    if "\x00" in raw:
+        return None
+
+    base = Path(_STATE.base_dir).resolve()
+    candidate = (base / raw).resolve()
+    if not _is_within_base_dir(candidate):
+        return None
+
+    rel = os.path.relpath(str(candidate), str(base)).replace("\\", "/")
+    if rel.startswith("../") or rel == "..":
+        return None
+    return rel
+
+
+def _resolve_repo_relpath(link_path: str, current_doc_rel: str) -> Optional[str]:
+    """Resolve a link path (possibly relative) to a safe repo-relative path."""
+    if not link_path:
+        return None
+
+    raw = link_path.strip().replace("\\", "/")
+
+    # Treat leading slash as repo-root relative.
+    if raw.startswith("/"):
+        return _safe_repo_relpath(raw.lstrip("/"))
+
+    # Otherwise resolve relative to current doc directory.
+    cur_dir = os.path.dirname(current_doc_rel).replace("\\", "/")
+    joined = f"{cur_dir}/{raw}" if cur_dir else raw
+    # Normalize path segments.
+    norm = str(Path(joined)).replace("\\", "/")
+    return _safe_repo_relpath(norm)
+
+
+def _is_markdown_path(path_s: str) -> bool:
+    p = (path_s or "").lower()
+    return p.endswith(".md") or p.endswith(".markdown") or p.endswith(".mdown")
+
+
+class _HtmlRewrite(HTMLParser):
+    """Rewrite HTML anchors/images for docs iframe navigation."""
+
+    _VOID_TAGS = {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+
+    def __init__(self, current_doc_rel: str):
+        super().__init__(convert_charrefs=False)
+        self.current_doc_rel = current_doc_rel
+        self.out: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]):
+        self._emit_tag(
+            tag,
+            attrs,
+            is_end=False,
+            is_self_closing=(tag in self._VOID_TAGS),
+        )
+
+    def handle_startendtag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]):
+        self._emit_tag(tag, attrs, is_end=False, is_self_closing=True)
+
+    def handle_endtag(self, tag: str):
+        self.out.append(f"</{tag}>")
+
+    def handle_data(self, data: str):
+        self.out.append(data)
+
+    def handle_entityref(self, name: str):
+        self.out.append(f"&{name};")
+
+    def handle_charref(self, name: str):
+        self.out.append(f"&#{name};")
+
+    def handle_comment(self, data: str):
+        self.out.append(f"<!--{data}-->")
+
+    def handle_decl(self, decl: str):
+        self.out.append(f"<!{decl}>")
+
+    def unknown_decl(self, data: str):
+        self.out.append(f"<![{data}]>")
+
+    def _emit_tag(
+        self,
+        tag: str,
+        attrs: List[Tuple[str, Optional[str]]],
+        is_end: bool,
+        is_self_closing: bool,
+    ):
+        if is_end:
+            self.out.append(f"</{tag}>")
+            return
+
+        attrs_dict: Dict[str, str] = {}
+        for k, v in attrs:
+            if k is None:
+                continue
+            attrs_dict[k] = "" if v is None else v
+
+        if tag == "a":
+            href = attrs_dict.get("href", "")
+            new_href, extra = self._rewrite_anchor_href(href)
+            if new_href is not None:
+                attrs_dict["href"] = new_href
+            for kk, vv in extra.items():
+                attrs_dict[kk] = vv
+
+        if tag == "img":
+            src = attrs_dict.get("src", "")
+            new_src = self._rewrite_img_src(src)
+            if new_src is not None:
+                attrs_dict["src"] = new_src
+
+        attrs_s = "".join(
+            f" {k}=\"{html.escape(v, quote=True)}\"" for k, v in attrs_dict.items()
+        )
+        if is_self_closing:
+            self.out.append(f"<{tag}{attrs_s} />")
+        else:
+            self.out.append(f"<{tag}{attrs_s}>")
+
+    def _rewrite_anchor_href(self, href: str) -> Tuple[Optional[str], Dict[str, str]]:
+        if not href:
+            return None, {}
+
+        href_s = href.strip()
+
+        # Keep in-document anchors.
+        if href_s.startswith("#"):
+            return None, {}
+
+        # Open external links in a new tab.
+        if href_s.startswith("http://") or href_s.startswith("https://"):
+            return None, {"target": "_blank", "rel": "noopener noreferrer"}
+
+        if href_s.startswith("mailto:") or href_s.startswith("tel:"):
+            return None, {}
+
+        parts = urllib.parse.urlsplit(href_s)
+        link_path = parts.path or ""
+
+        if not _is_markdown_path(link_path):
+            return None, {}
+
+        resolved = _resolve_repo_relpath(link_path, self.current_doc_rel)
+        if not resolved:
+            return None, {}
+
+        q = urllib.parse.urlencode({"path": resolved})
+        new_href = f"/docs/view?{q}"
+        if parts.fragment:
+            new_href += "#" + parts.fragment
+        return new_href, {}
+
+    def _rewrite_img_src(self, src: str) -> Optional[str]:
+        if not src:
+            return None
+
+        src_s = src.strip()
+        if (
+            src_s.startswith("http://")
+            or src_s.startswith("https://")
+            or src_s.startswith("data:")
+        ):
+            return None
+
+        parts = urllib.parse.urlsplit(src_s)
+        resolved = _resolve_repo_relpath(parts.path or "", self.current_doc_rel)
+        if not resolved:
+            return None
+
+        # Keep query/fragments if present (rare but valid).
+        q = urllib.parse.quote(resolved)
+        new_src = f"/docs/raw/{q}"
+        if parts.query:
+            new_src += "?" + parts.query
+        if parts.fragment:
+            new_src += "#" + parts.fragment
+        return new_src
+
+
+def _render_docs_content_page(title: str, inner_html: str) -> bytes:
+    """HTML for docs iframe content (no app chrome)."""
+    page = f"""<!doctype html>
+<html lang=\"en\" data-theme=\"dark\">
+<head>
+  <meta charset=\"utf-8\"/>
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>
+  <title>{html.escape(title)}</title>
+  <script>
+    (function() {{
+      try {{
+        const saved = localStorage.getItem('toolbox_theme');
+        document.documentElement.dataset.theme = saved || 'dark';
+      }} catch (e) {{
+        document.documentElement.dataset.theme = 'dark';
+      }}
+    }})();
+  </script>
+  <style>
+    :root[data-theme="dark"] {{
+    --bg: #0f1115;
+    --panel: #151820;
+    --text: #e8e8ea;
+    --muted: #a7adb8;
+    --border: #2a2f39;
+    --primary: #60a5fa;
+    --code-bg: #1a1d26;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    }}
+    :root[data-theme="light"] {{
+    --bg: #f5f5f7;
+    --panel: #ffffff;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --border: #d2d2d7;
+    --primary: #0071e3;
+    --code-bg: #f5f5f7;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    }}
+    body {{
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    }}
+    .doc {{
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 18px 16px;
+    }}
+    .doc {{ line-height: 1.6; }}
+    .doc h1 {{ margin-top: 1.5em; border-bottom: 2px solid var(--border); padding-bottom: 0.3em; }}
+    .doc h2 {{ margin-top: 1.3em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }}
+    .doc h3 {{ margin-top: 1em; }}
+    .doc code {{ background: var(--code-bg); padding: 2px 6px; border-radius: 3px; font-size: 0.9em; font-family: var(--mono); }}
+    .doc pre {{ background: var(--code-bg); padding: 12px; border-radius: 10px; overflow-x: auto; }}
+    .doc pre code {{ background: none; padding: 0; }}
+    .doc table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
+    .doc th, .doc td {{ border: 1px solid var(--border); padding: 8px 12px; text-align: left; }}
+    .doc th {{ background: var(--code-bg); font-weight: bold; }}
+    .doc blockquote {{ border-left: 4px solid var(--primary); padding-left: 1em; margin-left: 0; color: var(--muted); }}
+    .doc a {{ color: var(--primary); text-decoration: none; }}
+    .doc a:hover {{ text-decoration: underline; }}
+    .doc ul, .doc ol {{ padding-left: 2em; }}
+    .doc li {{ margin: 0.3em 0; }}
+  </style>
+</head>
+<body>
+  <div class=\"doc\">{inner_html}</div>
+</body>
+</html>"""
+    return page.encode("utf-8")
+
+
+def _guess_content_type(path_s: str) -> str:
+    ext = (Path(path_s).suffix or "").lower()
+    if ext in {".png"}:
+        return "image/png"
+    if ext in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if ext in {".gif"}:
+        return "image/gif"
+    if ext in {".webp"}:
+        return "image/webp"
+    if ext in {".svg"}:
+        return "image/svg+xml"
+    if ext in {".css"}:
+        return "text/css; charset=utf-8"
+    if ext in {".js"}:
+        return "text/javascript; charset=utf-8"
+    if ext in {".json"}:
+        return "application/json; charset=utf-8"
+    if ext in {".txt", ".log", ".md"}:
+        return "text/plain; charset=utf-8"
+    return "application/octet-stream"
 
 
 def _start_task(argv: List[str]) -> Task:
@@ -441,7 +762,14 @@ def _html_page(title: str, body: str) -> bytes:
     <div class="winctrl">
       <button type="button" onclick="if(pywebview && pywebview.api && pywebview.api.minimize) pywebview.api.minimize()" title="Minimize">&#x2212;</button>
       <button type="button" onclick="if(pywebview && pywebview.api && pywebview.api.toggle_fullscreen) pywebview.api.toggle_fullscreen()" title="Fullscreen">&#x26F6;</button>
-      <button type="button" class="close" onclick="if(pywebview && pywebview.api && pywebview.api.close) {{ pywebview.api.close(); }} else {{ location.href='/shutdown_redirect'; }}" title="Close">&#x2716;</button>
+      <button type="button" class="close" title="Close" onclick="(function(){{
+        try {{ if (window.pywebview && pywebview.api && pywebview.api.close) {{ pywebview.api.close(); }} }} catch(e) {{}}
+        try {{ fetch('/shutdown', {{method:'POST', keepalive:true}}).catch(()=>{{}}); }} catch(e) {{}}
+        setTimeout(function(){{
+          try {{ window.close(); }} catch(e) {{}}
+          try {{ location.href='/shutdown_redirect'; }} catch(e) {{}}
+        }}, 120);
+      }})();">&#x2716;</button>
     </div>
   </div>
   <div class="wrap">
@@ -516,7 +844,7 @@ def _launcher_body(selected: Optional[str]) -> str:
         <h3>&#128214; Documentation</h3>
         <p>View Deer Toolbox documentation.</p>
         <div class="row">
-          <a class="btn primary" href="/readme">View Docs</a>
+          <a class="btn primary" href="/docs">View Docs</a>
         </div>
       </div>
     </div>"""
@@ -625,6 +953,90 @@ def _readme_page(tool_id: Optional[str] = None) -> str:
     """
 
 
+def _docs_wrapper_body(doc_rel: str, tool_id: Optional[str] = None) -> str:
+    """Wrapper page that always shows docs inside an iframe frame."""
+    if not _STATE.tools:
+        _STATE.discover_tools()
+
+    # Navigation links that load into the frame.
+    doc_rel_q = urllib.parse.urlencode({"path": doc_rel})
+    frame_src = f"/docs/view?{doc_rel_q}"
+
+    # Build quick links.
+    main_link = f"/docs/view?{urllib.parse.urlencode({'path': 'README.md'})}"
+
+    tool_links: List[str] = []
+    for tid in sorted(_STATE.tools.keys()):
+        meta = _STATE.tools[tid]
+        tool_dir = meta.get("_dir", tid)
+        path = f"plugins/{tool_dir}/README.md"
+        href = f"/docs/view?{urllib.parse.urlencode({'path': path})}"
+        name = html.escape(meta.get("name", tid.replace("_", " ").title()))
+        active = " primary" if tool_id == tid else ""
+        tool_links.append(
+            f'<a class="btn{active}" target="{_DOCS_FRAME_NAME}" href="{href}">{name}</a>'
+        )
+
+    return f"""
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center; gap:10px">
+        <div style="display:flex; gap:8px; flex-wrap:wrap">
+          <a class="btn" href="/">Home</a>
+          <a class="btn" target="{_DOCS_FRAME_NAME}" href="{main_link}">Main README</a>
+          {"".join(tool_links)}
+        </div>
+        <div class="status">Docs are rendered inside the frame below.</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px; padding:0">
+      <iframe
+        name="{_DOCS_FRAME_NAME}"
+        title="Documentation"
+        src="{frame_src}"
+        style="width:100%; height:72vh; border:0; border-radius:14px; background: var(--bg)"
+      ></iframe>
+    </div>
+    """
+
+
+def _render_markdown_file(repo_rel: str) -> Tuple[str, str]:
+    """Render a markdown file to HTML and rewrite doc links/assets."""
+    base = Path(_STATE.base_dir).resolve()
+    abs_path = (base / repo_rel).resolve()
+    if not _is_within_base_dir(abs_path):
+        raise FileNotFoundError("Unsafe path")
+
+    with open(abs_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    title = repo_rel
+
+    # Try to render markdown with Python markdown library if available
+    html_content: str
+    try:
+        import importlib
+
+        markdown = importlib.import_module("markdown")
+        html_content = markdown.markdown(
+            content,
+            extensions=["extra", "codehilite", "toc", "tables", "fenced_code"],
+        )
+    except ImportError:
+        html_content = f'<pre style="white-space: pre-wrap; font-family: inherit;">{html.escape(content)}</pre>'
+
+    # Rewrite markdown links and local assets to go through the docs routes.
+    try:
+        rewriter = _HtmlRewrite(current_doc_rel=repo_rel)
+        rewriter.feed(html_content)
+        html_content = "".join(rewriter.out)
+    except Exception:
+        # Best-effort: if rewrite fails, still show rendered HTML.
+        pass
+
+    return title, html_content
+
+
 def _tool_page(tool_id: str) -> str:
     """Generate a dynamic tool page.
 
@@ -664,7 +1076,7 @@ def _build_generic_tool_page(tool_id: str, meta: dict, py: str) -> str:
       <h2>{icon} {name}</h2>
       <p style="color:var(--muted)">{desc}</p>
       <div class="row" style="margin-top:12px">
-        <a class="btn" href="/readme?tool={tool_id}">&#128214; View Documentation</a>
+        <a class="btn" href="/docs?tool={tool_id}">&#128214; View Documentation</a>
         <a class="btn" href="/">Home</a>
       </div>
     </div>
@@ -721,7 +1133,7 @@ def _build_tool_form(tool_id: str, meta: dict, config: dict, py: str) -> str:
       <h2>{icon} {name}</h2>
       <p style="color:var(--muted)">{desc}</p>
       <div class="row" style="margin-top:12px">
-        <a class="btn" href="/readme?tool={tool_id}">&#128214; View Documentation</a>
+        <a class="btn" href="/docs?tool={tool_id}">&#128214; View Documentation</a>
         <a class="btn" href="/">Home</a>
       </div>
     </div>
@@ -880,27 +1292,87 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/shutdown_redirect":
-            _shutdown_server()
-            self._send(
-                200,
-                _html_page(
-                    "Stopped",
-                    "<div class='card'>GUI stopped. You can close this window.</div>",
-                ),
-            )
-            return
+          self._send(200, _html_page("Stopped", "<div class='card'>GUI stopped. You can close this window.</div>"))
+          threading.Thread(target=_shutdown_and_exit, daemon=True).start()
+          return
 
-        # README viewing
+        # Back-compat README route (redirects to framed docs)
         if path == "/readme":
-            tool_id = (qs.get("tool") or [""])[0].strip() or None
-            body = _readme_page(tool_id)
-            title = (
-                "Documentation"
-                if tool_id is None
-                else f"{tool_id.replace('_', ' ').title()} Documentation"
+          tool_id = (qs.get("tool") or [""])[0].strip() or None
+          location = "/docs"
+          if tool_id:
+            location += "?" + urllib.parse.urlencode({"tool": tool_id})
+          self._redirect(location)
+          return
+
+        # Framed documentation
+        if path == "/docs":
+          if not _STATE.tools:
+            _STATE.discover_tools()
+
+          tool_id = (qs.get("tool") or [""])[0].strip() or None
+          path_q = (qs.get("path") or [""])[0].strip() or None
+
+          doc_rel: Optional[str] = None
+          if tool_id and tool_id in _STATE.tools:
+            meta = _STATE.tools[tool_id]
+            tool_dir = meta.get("_dir", tool_id)
+            doc_rel = _safe_repo_relpath(f"plugins/{tool_dir}/README.md")
+          elif path_q:
+            doc_rel = _safe_repo_relpath(path_q)
+
+          if not doc_rel:
+            doc_rel = "README.md"
+
+          body = _docs_wrapper_body(doc_rel, tool_id=tool_id)
+          self._send(200, _html_page("Documentation", body))
+          return
+
+        # Docs iframe content (HTML)
+        if path == "/docs/view":
+          req = (qs.get("path") or [""])[0].strip() or "README.md"
+          doc_rel = _safe_repo_relpath(req) or "README.md"
+          try:
+            title, inner = _render_markdown_file(doc_rel)
+            self._send(
+              200,
+              _render_docs_content_page(title=title, inner_html=inner),
+              "text/html; charset=utf-8",
             )
-            self._send(200, _html_page(title, body))
+          except FileNotFoundError:
+            msg = f"<h2>Not Found</h2><p>File not found: {html.escape(doc_rel)}</p>"
+            self._send(
+              404,
+              _render_docs_content_page(title="Not Found", inner_html=msg),
+              "text/html; charset=utf-8",
+            )
+          except Exception as e:
+            msg = f"<h2>Error</h2><p>{html.escape(str(e))}</p>"
+            self._send(
+              500,
+              _render_docs_content_page(title="Error", inner_html=msg),
+              "text/html; charset=utf-8",
+            )
+          return
+
+        # Docs assets (images, etc)
+        if path.startswith("/docs/raw/"):
+          raw = path[len("/docs/raw/") :]
+          raw = urllib.parse.unquote(raw)
+          doc_rel = _safe_repo_relpath(raw)
+          if not doc_rel:
+            self._send(404, b"not found", "text/plain")
             return
+          abs_path = (Path(_STATE.base_dir).resolve() / doc_rel).resolve()
+          if not _is_within_base_dir(abs_path) or not abs_path.exists():
+            self._send(404, b"not found", "text/plain")
+            return
+          try:
+            data = abs_path.read_bytes()
+            self._send(200, data, _guess_content_type(doc_rel))
+          except Exception:
+            self._send(500, b"error", "text/plain")
+          return
 
         # Dynamic tool pages
         if path.startswith("/tool/"):
@@ -1156,23 +1628,23 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/shutdown":
-            self._send(
-                200, _html_page("Stopping", '<div class="card">Stopping GUI…</div>')
-            )
-            threading.Thread(target=_shutdown_server, daemon=True).start()
-            return
+          self._send(
+            200, _html_page("Stopping", '<div class="card">Stopping GUI…</div>')
+          )
+          threading.Thread(target=_shutdown_and_exit, daemon=True).start()
+          return
 
         self._send(404, b"not found", "text/plain")
 
 
 def _shutdown_server():
-    srv = _STATE.server
-    if srv is None:
-        return
-    try:
-        srv.shutdown()
-    except Exception:
-        pass
+  srv = _STATE.server
+  if srv is None:
+    return
+  try:
+    srv.shutdown()
+  except Exception:
+    pass
 
 
 def open_tui_in_terminal() -> Tuple[bool, str]:
@@ -1271,13 +1743,27 @@ def start_server(
     return server, url
 
 
+def _shutdown_and_exit():
+  """Shut down the server and terminate the process unconditionally."""
+  try:
+    _shutdown_server()
+  finally:
+    try:
+      srv = _STATE.server
+      if srv:
+        srv.server_close()
+    except Exception:
+      pass
+    os._exit(0)
+
+
 def stop_server(server: ThreadingHTTPServer):
-    """Stop a server started by start_server(background=True)."""
-    try:
-        server.shutdown()
-    except Exception:
-        pass
-    try:
-        server.server_close()
-    except Exception:
-        pass
+  """Stop a server started by start_server(background=True)."""
+  try:
+    server.shutdown()
+  except Exception:
+    pass
+  try:
+    server.server_close()
+  except Exception:
+    pass
