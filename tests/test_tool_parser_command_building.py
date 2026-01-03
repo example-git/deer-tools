@@ -4,7 +4,7 @@ import sys
 import toolbox.tool_parser as tool_parser
 
 
-def test_build_command_from_action_fields_adds_threads_and_quotes_paths():
+def test_build_command_from_action_fields_adds_threads_and_quotes_paths(tmp_path):
     action = {
         "id": "scan",
         "fields": [
@@ -13,10 +13,13 @@ def test_build_command_from_action_fields_adds_threads_and_quotes_paths():
         ],
     }
 
+    dir_path = tmp_path / "has space"
+    dir_path.mkdir()
+
     cmd = tool_parser.build_command_from_action(
         tool_id="hashdb",
         action=action,
-        field_values={"directory": "/tmp/has space", "hash": "sha256"},
+        field_values={"directory": str(dir_path), "hash": "sha256"},
         python_exe=sys.executable,
         threads=3,
     )
@@ -27,7 +30,7 @@ def test_build_command_from_action_fields_adds_threads_and_quotes_paths():
     assert "hashdb" in parts
 
     # directory is positional for common fields
-    assert "/tmp/has space" in parts
+    assert str(dir_path) in parts
 
     # hash should be flagged
     assert "--hash" in parts

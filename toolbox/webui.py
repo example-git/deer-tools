@@ -27,16 +27,17 @@ import sys
 import threading
 import time
 import urllib.parse
+import weakref
 import webbrowser
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+from shared import start_subprocess_to_log
 
 # Import shared tool parsing utilities
 from toolbox import tool_parser
-from shared import start_subprocess_to_log
-
-from pathlib import Path
 
 
 @dataclass
@@ -85,6 +86,11 @@ class _State:
 
 _STATE = _State()
 
+# Track background server threads without mutating stdlib server objects.
+_SERVER_THREADS: "weakref.WeakKeyDictionary[ThreadingHTTPServer, threading.Thread]" = (
+    weakref.WeakKeyDictionary()
+)
+
 
 def _split_command(cmd: str) -> List[str]:
     """Split a shell command string into a list of arguments."""
@@ -93,12 +99,12 @@ def _split_command(cmd: str) -> List[str]:
 
 def _start_task(argv: List[str]) -> Task:
     tid = _STATE.new_task_id()
-    
+
     # Create log directory in the project's working directory
     log_dir = os.path.join(_STATE.base_dir, ".logs")
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"task_{tid}_{int(time.time())}.log")
-    
+
     task = Task(id=tid, argv=argv, log_file=log_file)
 
     with _STATE.lock:
@@ -481,14 +487,16 @@ def _launcher_body(selected: Optional[str]) -> str:
         desc = html.escape(meta.get("description", ""))
         icon = meta.get("icon", "&#128295;")  # Default wrench icon
         if meta.get("supports_gui", False):
-            tool_tiles.append(f"""
+            tool_tiles.append(
+                f"""
       <div class="tile">
         <h3>{icon} {name}</h3>
         <p>{desc}</p>
         <div class="row">
           <a class="btn primary" href="/tool/{html.escape(tool_id)}">Open</a>
         </div>
-      </div>""")
+      </div>"""
+            )
 
     tiles = '<div class="grid">' + "".join(tool_tiles)
 
@@ -533,14 +541,16 @@ def _launcher_body(selected: Optional[str]) -> str:
 
 def _readme_page(tool_id: Optional[str] = None) -> str:
     """Generate a README viewing page with markdown rendering.
-    
+
     Args:
         tool_id: Tool ID to show README for, or None for main README
     """
     # Determine README path
     if tool_id:
         meta = _STATE.tools.get(tool_id, {})
-        tool_path = meta.get("_path") or os.path.join(_STATE.plugins_dir, meta.get("_dir", tool_id))
+        tool_path = meta.get("_path") or os.path.join(
+            _STATE.plugins_dir, meta.get("_dir", tool_id)
+        )
         readme_path = os.path.join(tool_path, "README.md")
         title = f"{tool_id.replace('_', ' ').title()} Documentation"
         back_link = f"/tool/{html.escape(tool_id)}"
@@ -548,7 +558,7 @@ def _readme_page(tool_id: Optional[str] = None) -> str:
         readme_path = os.path.join(_STATE.base_dir, "README.md")
         title = "Deer Toolbox Documentation"
         back_link = "/"
-    
+
     # Read README content
     try:
         with open(readme_path, "r", encoding="utf-8") as f:
@@ -569,7 +579,7 @@ def _readme_page(tool_id: Optional[str] = None) -> str:
           <a class="btn" href="{back_link}">Go Back</a>
         </div>
         """
-    
+
     # Try to render markdown with Python markdown library if available
     try:
         import importlib
@@ -582,7 +592,7 @@ def _readme_page(tool_id: Optional[str] = None) -> str:
     except ImportError:
         # Fallback: basic HTML escaping with pre-wrap
         html_content = f'<pre style="white-space: pre-wrap; font-family: inherit;">{html.escape(content)}</pre>'
-    
+
     return f"""
     <div class="card">
       <div class="row" style="justify-content:space-between; align-items:center">
@@ -617,17 +627,18 @@ def _readme_page(tool_id: Optional[str] = None) -> str:
 
 def _tool_page(tool_id: str) -> str:
     """Generate a dynamic tool page.
-    
+
     Checks for a webui_config in the tool's module or falls back to generic CLI form.
     """
     meta = _STATE.tools.get(tool_id, {})
     tool_dir = meta.get("_dir", tool_id)
     py = shlex.quote(sys.executable)
-    
+
     # Try to import webui_config from the tool module
     webui_config = None
     try:
         import importlib
+
         mod = importlib.import_module(f"plugins.{tool_dir}.tool")
         webui_config = getattr(mod, "webui_config", None)
     except Exception:
@@ -704,7 +715,8 @@ def _build_tool_form(tool_id: str, meta: dict, config: dict, py: str) -> str:
     cli_name = tool_id.replace("_", "-")
 
     sections = []
-    sections.append(f"""
+    sections.append(
+        f"""
     <div class="card">
       <h2>{icon} {name}</h2>
       <p style="color:var(--muted)">{desc}</p>
@@ -713,7 +725,8 @@ def _build_tool_form(tool_id: str, meta: dict, config: dict, py: str) -> str:
         <a class="btn" href="/">Home</a>
       </div>
     </div>
-    """)
+    """
+    )
 
     # Build forms from config
     for action in config.get("actions", []):
@@ -731,40 +744,51 @@ def _build_tool_form(tool_id: str, meta: dict, config: dict, py: str) -> str:
             frequired = "required" if field_def.get("required", False) else ""
 
             if ftype == "directory":
-                fields_html.append(f"""
+                fields_html.append(
+                    f"""
                 <div class="row">
                   <label for="{fid}">{fname}</label>
                   <input id="{fid}" name="{fid}" type="text" placeholder="{placeholder}" value="{fdefault}" {frequired}/>
-                </div>""")
+                </div>"""
+                )
             elif ftype == "file":
-                fields_html.append(f"""
+                fields_html.append(
+                    f"""
                 <div class="row">
                   <label for="{fid}">{fname}</label>
                   <input id="{fid}" name="{fid}" type="text" placeholder="{placeholder}" value="{fdefault}" {frequired}/>
-                </div>""")
+                </div>"""
+                )
             elif ftype == "select":
                 opts = "".join(
                     f'<option value="{html.escape(o)}">{html.escape(o)}</option>'
                     for o in field_def.get("options", [])
                 )
-                fields_html.append(f"""
+                fields_html.append(
+                    f"""
                 <div class="row">
                   <label for="{fid}">{fname}</label>
                   <select id="{fid}" name="{fid}">{opts}</select>
-                </div>""")
+                </div>"""
+                )
             elif ftype == "checkbox":
                 checked = "checked" if field_def.get("default", False) else ""
-                fields_html.append(f"""
+                fields_html.append(
+                    f"""
                 <div class="row">
                   <label><input type="checkbox" id="{fid}" name="{fid}" {checked}/> {fname}</label>
-                </div>""")
+                </div>"""
+                )
             else:
-                fields_html.append(f"""
+                fields_html.append(
+                    f"""
                 <div class="row">
                   <label for="{fid}">{fname}</label>
                   <input id="{fid}" name="{fid}" type="text" placeholder="{placeholder}" value="{fdefault}" {frequired}/>
-                </div>""")
-        sections.append(f"""
+                </div>"""
+                )
+        sections.append(
+            f"""
     <div class="card" style="margin-top:16px">
       <h3>{action_name}</h3>
       <p style="color:var(--muted);font-size:13px">{action_desc}</p>
@@ -775,10 +799,12 @@ def _build_tool_form(tool_id: str, meta: dict, config: dict, py: str) -> str:
         </div>
       </form>
     </div>
-        """)
+        """
+        )
 
     # Add generic command runner
-    sections.append(f"""
+    sections.append(
+        f"""
     <div class="card" style="margin-top:16px">
       <h3>Custom Command</h3>
       <form method="post" action="/run">
@@ -789,14 +815,15 @@ def _build_tool_form(tool_id: str, meta: dict, config: dict, py: str) -> str:
         </div>
       </form>
     </div>
-    """)
+    """
+    )
 
     return "".join(sections)
 
 
 def _build_command_from_form(tool_id: str, action_id: str, form: dict) -> Optional[str]:
     """Build a CLI command from form data using tool's webui_config.
-    
+
     Uses the 'command' template from action if available, otherwise builds
     command from fields. The template can contain {field_id} placeholders.
     """
@@ -821,7 +848,9 @@ def _build_command_from_form(tool_id: str, action_id: str, form: dict) -> Option
 
 
 class _Handler(BaseHTTPRequestHandler):
-    def _send(self, code: int, body: bytes, content_type: str = "text/html; charset=utf-8"):
+    def _send(
+        self, code: int, body: bytes, content_type: str = "text/html; charset=utf-8"
+    ):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -833,7 +862,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Location", location)
         self.end_headers()
 
-    def log_message(self, format: str, *args: object) -> None:  # pylint: disable=redefined-builtin
+    def log_message(
+        self, format: str, *args: object
+    ) -> None:  # pylint: disable=redefined-builtin
         # Keep console clean; tasks output is shown in UI.
         return
 
@@ -850,14 +881,24 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/shutdown_redirect":
             _shutdown_server()
-            self._send(200, _html_page("Stopped", "<div class='card'>GUI stopped. You can close this window.</div>"))
+            self._send(
+                200,
+                _html_page(
+                    "Stopped",
+                    "<div class='card'>GUI stopped. You can close this window.</div>",
+                ),
+            )
             return
 
         # README viewing
         if path == "/readme":
             tool_id = (qs.get("tool") or [""])[0].strip() or None
             body = _readme_page(tool_id)
-            title = "Documentation" if tool_id is None else f"{tool_id.replace('_', ' ').title()} Documentation"
+            title = (
+                "Documentation"
+                if tool_id is None
+                else f"{tool_id.replace('_', ' ').title()} Documentation"
+            )
             self._send(200, _html_page(title, body))
             return
 
@@ -874,7 +915,13 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, _html_page(title, body))
                 return
             else:
-                self._send(404, _html_page("Not Found", f"<div class='card'>Tool '{html.escape(tool_id)}' not found.</div>"))
+                self._send(
+                    404,
+                    _html_page(
+                        "Not Found",
+                        f"<div class='card'>Tool '{html.escape(tool_id)}' not found.</div>",
+                    ),
+                )
                 return
 
         if path.startswith("/task/") and path.endswith("/logs"):
@@ -895,15 +942,19 @@ class _Handler(BaseHTTPRequestHandler):
                 task = _STATE.tasks.get(tid)
                 if not task:
                     payload = {"error": "not found"}
-                    self._send(404, json.dumps(payload).encode("utf-8"), "application/json")
+                    self._send(
+                        404, json.dumps(payload).encode("utf-8"), "application/json"
+                    )
                     return
 
                 lines = task.lines[pos:]
                 # Calculate ETA if progress is available
                 eta = None
                 if task.progress_percent > 0 and not task.done:
-                    eta = tool_parser.estimate_eta(task.started_at, task.progress_percent)
-                
+                    eta = tool_parser.estimate_eta(
+                        task.started_at, task.progress_percent
+                    )
+
                 payload = {
                     "id": task.id,
                     "pos": pos + len(lines),
@@ -935,7 +986,12 @@ class _Handler(BaseHTTPRequestHandler):
                 task = _STATE.tasks.get(tid)
 
             if not task:
-                self._send(404, _html_page("Task not found", "<div class=\"card\">No such task.</div>"))
+                self._send(
+                    404,
+                    _html_page(
+                        "Task not found", '<div class="card">No such task.</div>'
+                    ),
+                )
                 return
 
             argv_disp = html.escape(" ".join(task.argv))
@@ -1063,7 +1119,10 @@ class _Handler(BaseHTTPRequestHandler):
             cmd = (form.get("cmd") or [""])[0]
             argv = _split_command(cmd)
             if not argv:
-                self._send(400, _html_page("Error", "<div class=\"card\">No command provided.</div>"))
+                self._send(
+                    400,
+                    _html_page("Error", '<div class="card">No command provided.</div>'),
+                )
                 return
 
             task = _start_task(argv)
@@ -1083,18 +1142,23 @@ class _Handler(BaseHTTPRequestHandler):
                         task = _start_task(argv)
                         self._redirect(f"/task/{task.id}")
                         return
-            self._send(400, _html_page("Error", "<div class='card'>Invalid form submission.</div>"))
+            self._send(
+                400,
+                _html_page("Error", "<div class='card'>Invalid form submission.</div>"),
+            )
             return
 
         if path == "/open_tui":
             ok, msg = open_tui_in_terminal()
             badge = "good" if ok else "bad"
-            body = f"<div class=\"card\"><div class=\"badge {badge}\">{html.escape(msg)}</div></div>"
+            body = f'<div class="card"><div class="badge {badge}">{html.escape(msg)}</div></div>'
             self._send(200, _html_page("Open TUI", body))
             return
 
         if path == "/shutdown":
-            self._send(200, _html_page("Stopping", "<div class=\"card\">Stopping GUI…</div>"))
+            self._send(
+                200, _html_page("Stopping", '<div class="card">Stopping GUI…</div>')
+            )
             threading.Thread(target=_shutdown_server, daemon=True).start()
             return
 
@@ -1117,7 +1181,9 @@ def open_tui_in_terminal() -> Tuple[bool, str]:
     Returns:
         (ok, message)
     """
-    cmd = f"cd {shlex.quote(_STATE.base_dir)} && {shlex.quote(sys.executable)} toolbox.py"
+    cmd = (
+        f"cd {shlex.quote(_STATE.base_dir)} && {shlex.quote(sys.executable)} toolbox.py"
+    )
 
     if sys.platform == "darwin":
         # macOS Terminal
@@ -1139,7 +1205,9 @@ def open_tui_in_terminal() -> Tuple[bool, str]:
     return False, "Run the TUI from a terminal: python toolbox.py"
 
 
-def launch_gui(selected_tool: Optional[str] = None, host: str = "127.0.0.1", port: int = 0) -> int:
+def launch_gui(
+    selected_tool: Optional[str] = None, host: str = "127.0.0.1", port: int = 0
+) -> int:
     """Launch the browser-based GUI launcher.
 
     Args:
@@ -1150,7 +1218,9 @@ def launch_gui(selected_tool: Optional[str] = None, host: str = "127.0.0.1", por
     Returns:
         Process exit code.
     """
-    server, url = start_server(host=host, port=port, selected_tool=selected_tool, open_browser=True)
+    server, url = start_server(
+        host=host, port=port, selected_tool=selected_tool, open_browser=True
+    )
 
     print(f"[INFO] Toolbox GUI running at: {url}")
     print("[INFO] Press Ctrl+C to stop.")
@@ -1173,7 +1243,7 @@ def start_server(
     port: int = 0,
     selected_tool: Optional[str] = None,
     open_browser: bool = False,
-  background: bool = False,
+    background: bool = False,
 ):
     """Start the HTTP server and return (server, url).
 
@@ -1196,14 +1266,9 @@ def start_server(
     if background:
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
-        # Stash thread for optional diagnostics.
-        try:
-            setattr(server, "_toolbox_thread", t)
-        except Exception:
-            pass
+        _SERVER_THREADS[server] = t
 
     return server, url
-
 
 
 def stop_server(server: ThreadingHTTPServer):

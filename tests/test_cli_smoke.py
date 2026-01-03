@@ -20,6 +20,8 @@ def test_toolbox_help_exits_cleanly():
     assert "Tools Suite" in (proc.stdout + proc.stderr)
 
 
+# The `test_toolbox_doctor_exits_cleanly` function is a unit test written in Python. It is testing the
+# behavior of a command-line tool called `toolbox.py` with the argument "doctor".
 def test_toolbox_doctor_exits_cleanly():
     repo = _repo_root()
     proc = subprocess.run(
