@@ -9,8 +9,8 @@
 - **Integrity Verification**: Compare current file hashes against database records
 - **Deduplication**: Identify and safely remove duplicate files
 - **Batch Processing**: Chunked operations with progress tracking
-- **Export Formats**: CSV, JSON, and XML reporting
-- **Database Maintenance**: Cleanup orphaned records and optimize database
+- **Export**: Write hash lists to text files (one hash per line)
+- **Database Maintenance**: Cleanup orphaned records
 
 ## Quick Start
 
@@ -79,7 +79,7 @@ The deduplication algorithm selects the "best" file to keep based on:
 
 **Export hashes:**
 ```bash
-python toolbox.py hashdb export /path/to/.hashdb.sqlite report.csv --hash sha256
+python toolbox.py hashdb export /path/to/.hashdb.sqlite hashes.txt --hash sha256
 ```
 
 **Export chunked (for large databases):**
@@ -99,9 +99,10 @@ python toolbox.py hashdb report /path/to/.hashdb.sqlite report.txt --hash sha256
 python toolbox.py hashdb cleanup /path/to/.hashdb.sqlite
 ```
 
-**Vacuum and optimize database:**
+If you want to vacuum the SQLite file, use `sqlite3` directly:
+
 ```bash
-python toolbox.py hashdb vacuum --db /path/to/.hashdb.sqlite
+sqlite3 /path/to/.hashdb.sqlite 'VACUUM;'
 ```
 
 ## Database Schema
@@ -109,7 +110,7 @@ python toolbox.py hashdb vacuum --db /path/to/.hashdb.sqlite
 HashDB stores file records in SQLite with the following schema:
 
 ```sql
-CREATE TABLE files (
+CREATE TABLE file_hashes (
     filepath TEXT PRIMARY KEY,
     filename TEXT NOT NULL,
     size_bytes INTEGER NOT NULL,
@@ -156,7 +157,7 @@ python toolbox.py hashdb scan /path
 
 **Full rescan:** Rehash all files regardless of timestamps
 ```bash
-python toolbox.py hashdb scan /path --force-rescan
+python toolbox.py hashdb scan /path --full
 ```
 
 ## Common Use Cases
@@ -172,15 +173,15 @@ python toolbox.py hashdb scan /source --db source.sqlite
 python toolbox.py hashdb scan /backup --db backup.sqlite
 
 # Export both to CSV and compare externally
-python toolbox.py hashdb export --db source.sqlite --format csv --output source.csv
-python toolbox.py hashdb export --db backup.sqlite --format csv --output backup.csv
+python toolbox.py hashdb export source.sqlite source_hashes.txt --hash sha256
+python toolbox.py hashdb export backup.sqlite backup_hashes.txt --hash sha256
 ```
 
 ### Periodic Integrity Checks
 
 Set up a cron job to verify file integrity:
 ```bash
-0 2 * * 0 python /path/to/toolbox.py hashdb verify /data/.hashdb.sqlite --report weekly_check.log
+0 2 * * 0 python /path/to/toolbox.py hashdb verify /data/.hashdb.sqlite --progress > weekly_check.log
 ```
 
 ### Cleaning Up Duplicates
@@ -191,7 +192,7 @@ After merging multiple photo libraries:
 python toolbox.py hashdb scan /photos --hash sha256
 
 # Find duplicates (dry-run)
-python toolbox.py hashdb dedupe --db /photos/.hashdb.sqlite --hash sha256
+python toolbox.py hashdb dedupe /photos/.hashdb.sqlite --hash sha256
 
 # Review quarantine directory, then delete if satisfied
 rm -rf /photos/_quarantine
@@ -205,7 +206,7 @@ Generate checksums for archival purposes:
 python toolbox.py hashdb scan /archive --hash sha256
 
 # Export checksums
-python toolbox.py hashdb export --db /archive/.hashdb.sqlite --format csv --output archive_checksums.csv
+python toolbox.py hashdb export /archive/.hashdb.sqlite archive_checksums.txt --hash sha256
 ```
 
 ## GUI Mode
@@ -224,17 +225,7 @@ The GUI provides:
 
 ## Configuration
 
-HashDB settings are stored in `config/hashdb.json`:
-
-```json
-{
-  "default_hash_algorithm": "sha256",
-  "default_threads": 8,
-  "default_batch_size": 50,
-  "auto_create_db": true,
-  "quarantine_dir_name": "_quarantine"
-}
-```
+HashDB does not currently use a persistent `config/hashdb.json` file. Defaults are controlled via CLI flags (for example `--hash`, `--threads`, and `--batch-size`).
 
 ## Troubleshooting
 

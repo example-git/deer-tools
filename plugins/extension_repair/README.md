@@ -57,7 +57,7 @@
 
 **Scan directory and preview what would be changed:**
 ```bash
-python toolbox.py extension-repair /path/to/files --dry-run
+python toolbox.py extension-repair /path/to/files --mode cli --dry-run
 ```
 
 This shows what changes would be made without actually modifying files.
@@ -66,26 +66,26 @@ This shows what changes would be made without actually modifying files.
 
 **Fix extensions in-place:**
 ```bash
-python toolbox.py extension-repair /path/to/files --commit
+python toolbox.py extension-repair /path/to/files --mode cli --commit
 ```
 
 **Fix extensions and move to output directory:**
 ```bash
-python toolbox.py extension-repair /path/to/files --commit --out /corrected/files
+python toolbox.py extension-repair /path/to/files --mode cli --commit --out /corrected/files
 ```
 
 ### Report-Only Mode
 
 **Generate a report without making any changes:**
 ```bash
-python toolbox.py extension-repair /path/to/files --report --log report.txt
+python toolbox.py extension-repair /path/to/files --mode cli --report
 ```
 
 ### Quarantine Mode
 
 **Move problematic files to quarantine instead of renaming:**
 ```bash
-python toolbox.py extension-repair /path/to/files --quarantine
+python toolbox.py extension-repair /path/to/files --mode cli --quarantine
 ```
 
 Files are moved to `_quarantine/` subdirectory for manual review.
@@ -99,7 +99,7 @@ Files are moved to `_quarantine/` subdirectory for manual review.
 | **Report-only** | Log to file | ❌ No | Generate audit reports |
 | **Quarantine** | Move to `_quarantine/` | ✅ Yes (moved) | Isolate problematic files |
 
-Combine with `--output` to move corrected files to a separate directory tree (preserves folder structure).
+Combine with `--out` to move corrected files to a separate directory tree (preserves folder structure).
 
 ## Advanced Options
 
@@ -108,7 +108,7 @@ Combine with `--output` to move corrected files to a separate directory tree (pr
 By default, files with ambiguous ISO BMFF brands (unknown MP4-like formats) are skipped. To force rename them:
 
 ```bash
-python toolbox.py extension-repair /path --commit --force-rename
+python toolbox.py extension-repair /path --mode cli --commit --force
 ```
 
 ⚠️ **Warning**: This may incorrectly classify some files.
@@ -118,7 +118,7 @@ python toolbox.py extension-repair /path --commit --force-rename
 Control parallelization based on CPU and disk speed:
 
 ```bash
-python toolbox.py extension-repair /path --commit --threads 16
+python toolbox.py extension-repair /path --mode cli --commit --threads 16
 ```
 
 Default is 8 threads. Reduce for HDDs, increase for SSDs.
@@ -128,7 +128,7 @@ Default is 8 threads. Reduce for HDDs, increase for SSDs.
 Launch with live log scrolling in a fixed-height window:
 
 ```bash
-python toolbox.py extension-repair /path --commit --console-ui
+python toolbox.py extension-repair /path --mode cli --commit --console-ui
 ```
 
 Controls:
@@ -141,7 +141,7 @@ Controls:
 Generate machine-parseable logs:
 
 ```bash
-python toolbox.py extension-repair /path --commit --json --log repair.jsonl
+python toolbox.py extension-repair /path --mode cli --commit --json
 ```
 
 Each line is a JSON object with timestamp, level, and message.
@@ -153,7 +153,7 @@ Each line is a JSON object with timestamp, level, and message.
 Extension Repair uses **strict mode** detection:
 1. ✅ **Known signature** → Classify and rename
 2. ❌ **Unknown signature** → Skip (log as `unknown`)
-3. ⚠️ **Ambiguous signature** → Skip by default (override with `--force-rename`)
+3. ⚠️ **Ambiguous signature** → Skip by default (override with `--force`)
 
 ### Magic-Byte Signatures
 
@@ -174,12 +174,12 @@ Files starting with `ftyp` box (MP4 family):
 - `ftypqt  ` → MOV
 - `ftypavif` → AVIF
 - `ftypheic` → HEIC
-- Unknown brands → Ambiguous (skip unless `--force-rename`)
+- Unknown brands → Ambiguous (skip unless `--force`)
 
 ### Handling Ambiguity
 
 **Ambiguous RIFF**: Unknown RIFF subtype → Skip
-**Ambiguous ISO**: Unknown `ftyp` brand → Skip (unless `--force-rename`)
+**Ambiguous ISO**: Unknown `ftyp` brand → Skip (unless `--force`)
 
 This prevents misclassification of proprietary or rare formats.
 
@@ -203,21 +203,21 @@ Conflict-free renaming ensures no data loss.
 
 After downloading files without extensions:
 ```bash
-python toolbox.py extension-repair ~/Downloads --commit
+python toolbox.py extension-repair ~/Downloads --mode cli --commit
 ```
 
 ### Repairing Photo Libraries
 
 Fix extensions in merged photo libraries:
 ```bash
-python toolbox.py extension-repair /photos --commit --threads 12
+python toolbox.py extension-repair /photos --mode cli --commit --threads 12
 ```
 
 ### Quarantine Unknown Files
 
 Isolate files with unknown or ambiguous types:
 ```bash
-python toolbox.py extension-repair /mixed --quarantine
+python toolbox.py extension-repair /mixed --mode cli --quarantine
 ```
 
 Review `_quarantine/` directory manually.
@@ -226,12 +226,12 @@ Review `_quarantine/` directory manually.
 
 Generate a full report before making changes:
 ```bash
-python toolbox.py extension-repair /important --report --log audit.txt
+python toolbox.py extension-repair /important --mode cli --report
 ```
 
-Review `audit.txt`, then commit if satisfied:
+Review the report output, then commit if satisfied:
 ```bash
-python toolbox.py extension-repair /important --commit
+python toolbox.py extension-repair /important --mode cli --commit
 ```
 
 ## Diagnostics
@@ -307,7 +307,7 @@ The GUI provides:
 **Solution:** 
 - Check file with `file` command: `file -b suspicious.dat`
 - Add signature to `magic_signatures.py` if it's a known format
-- Use `--force-rename` for ambiguous formats (risky)
+- Use `--force` for ambiguous formats (risky)
 
 ### False Positives
 
@@ -327,7 +327,7 @@ The GUI provides:
 **Solutions:**
 - Check ownership: `ls -la /path/to/file`
 - Run with appropriate privileges
-- Use `--output` mode to copy instead of rename
+- Use `--out` to write into a separate output tree (non in-place mode)
 - Check filesystem is writable (not read-only mount)
 
 ### Files Not Renamed

@@ -39,9 +39,9 @@ Recovery tool for restoring files from flattened directory structures. Parses tr
 **Requirements:**
 
 - Python 3.8 or later
-- No external dependencies required for CLI mode
+- Core CLI/tool logic runs on the Python standard library
 
-**Optional dependencies for enhanced features:**
+**Optional dependencies for enhanced UIs:**
 
 ```bash
 # Install all optional dependencies
@@ -62,11 +62,19 @@ pip install markdown           # Enhanced markdown rendering
 python toolbox.py
 ```
 
+You can also force the menu explicitly:
+
+```bash
+python toolbox.py menu
+```
+
 **Web GUI:**
 
 ```bash
 python toolbox.py gui
 ```
+
+Note: `gui` prefers the desktop wrapper (pywebview) if available, otherwise it falls back to the browser-based web UI.
 
 **Desktop GUI:**
 
@@ -121,22 +129,22 @@ These utilities use `ThreadPoolExecutor` for parallelization, which is optimal f
 
 ### HashDB Examples
 
-**Scan a directory and compute SHA-256 hashes:**
+**Scan a directory and compute SHA-256 hashes (default):**
 
 ```bash
-python toolbox.py hashdb scan --dir /path/to/files
+python toolbox.py hashdb scan /path/to/files
 ```
 
 **Verify file integrity:**
 
 ```bash
-python toolbox.py hashdb verify --db /path/to/.hashdb.sqlite
+python toolbox.py hashdb verify /path/to/.hashdb.sqlite
 ```
 
 **Find and remove duplicate files:**
 
 ```bash
-python toolbox.py hashdb dedupe --db /path/to/.hashdb.sqlite --hash sha256
+python toolbox.py hashdb dedupe /path/to/.hashdb.sqlite --hash sha256
 ```
 
 ### Extension Repair Examples
@@ -144,19 +152,19 @@ python toolbox.py hashdb dedupe --db /path/to/.hashdb.sqlite --hash sha256
 **Preview file type corrections (dry-run):**
 
 ```bash
-python toolbox.py extension-repair /path/to/files --dry-run
+python toolbox.py extension-repair /path/to/files --mode cli --dry-run
 ```
 
 **Apply corrections in-place:**
 
 ```bash
-python toolbox.py extension-repair /path/to/files --commit
+python toolbox.py extension-repair /path/to/files --mode cli --commit
 ```
 
 **Move corrected files to output directory:**
 
 ```bash
-python toolbox.py extension-repair /path/to/files --commit --out /output/dir
+python toolbox.py extension-repair /path/to/files --mode cli --commit --out /output/dir
 ```
 
 ### Undo Transfer Examples
@@ -164,7 +172,7 @@ python toolbox.py extension-repair /path/to/files --commit --out /output/dir
 **Restore files from transfer log:**
 
 ```bash
-python toolbox.py undo-transfer --log transfer.log --temp /temp/dir --restore /output --commit
+python toolbox.py undo-transfer --mode cli --log transfer.log --temp /temp/dir --restore /output --commit
 ```
 
 ---
@@ -176,7 +184,7 @@ To add a new tool to Deer Toolbox:
 1. **Create a subdirectory** with your tool name:
 
    ```bash
-   mkdir my_tool
+    mkdir -p plugins/my_tool
    ```
 
 2. **Create `metadata.json`:**
@@ -221,25 +229,24 @@ The toolbox will automatically discover and integrate your tool on next launch.
 
 ## Configuration
 
-Tools can persist settings under `config/`:
+Some tools persist settings under `config/` (created/updated on first run):
 
-- `config/hashdb.json` - HashDB settings
-- `config/extension_repair.json` - Extension Repair settings
-- `config/undo_transfer.json` - Undo Transfer settings
+- `config/extension_repair.json`
+- `config/undo_transfer.json`
 
-For automation, use `--non-interactive` mode and pass explicit CLI flags instead of relying on saved configuration.
+For automation, use `-y/--yes` (non-interactive) and pass explicit CLI flags instead of relying on saved configuration.
 
 ---
 
 ## Performance Characteristics
 
-Deer Toolbox uses **threading** (via `ThreadPoolExecutor`) for parallelization, which is optimal for:
+Deer Toolbox uses **threading** (via `ThreadPoolExecutor`) for parallelization, which is typically a good fit for:
 
 ✅ **I/O-bound operations** (file scanning, reading, writing)
 ✅ **GIL-releasing operations** (cryptographic hashing via `hashlib`)
 ✅ **Lightweight coordination** (shared state, queues, progress tracking)
 
-Threading performs ~25% faster than multiprocessing for hashing workloads and ~2x faster for I/O operations due to lower overhead. The GIL is automatically released during:
+In practice, performance depends on your storage (SSD vs HDD), file sizes, and CPU. The GIL is commonly released during:
 
 - File I/O operations
 - `hashlib` hash computation (MD5, SHA-256)
@@ -310,7 +317,6 @@ deer-toolbox/
 │   └── desktopui.py        # pywebview desktop wrapper
 ├── README.md               # This file
 ├── config/                 # Persistent tool configurations
-│   ├── hashdb.json
 │   ├── extension_repair.json
 │   └── undo_transfer.json
 ├── shared/                 # Shared utilities
@@ -352,7 +358,7 @@ To contribute a new tool:
 
 1. Follow the "Creating Custom Tools" guide above
 2. Ensure your tool includes comprehensive tests
-3. Add documentation to `tool_name/README.md`
+3. Add documentation to `plugins/tool_name/README.md`
 4. Submit a pull request with your changes
 
 ---

@@ -19,6 +19,7 @@
 **Restore files from transfer log:**
 ```bash
 python toolbox.py undo-transfer \
+  --mode cli \
   --log transfer.log \
   --temp /temp/dir \
   --restore /output/dir \
@@ -32,6 +33,7 @@ This reads `transfer.log`, hashes files in `/temp/dir`, and restores them to `/o
 **Preview what would be restored:**
 ```bash
 python toolbox.py undo-transfer \
+  --mode cli \
   --log transfer.log \
   --temp /temp/dir \
   --restore /output/dir
@@ -44,6 +46,7 @@ Shows file mappings without creating output files (default behavior).
 **Use MD5 (faster, less secure):**
 ```bash
 python toolbox.py undo-transfer \
+  --mode cli \
   --log transfer.log \
   --temp /temp/dir \
   --restore /output/dir \
@@ -53,7 +56,8 @@ python toolbox.py undo-transfer \
 
 **Use SHA-256 (slower, more secure - default):**
 ```bash
-python toolbox.py undo-transfer restore \
+python toolbox.py undo-transfer \
+  --mode cli \
   --log transfer.log \
   --temp /temp/dir \
   --restore /output/dir \
@@ -62,44 +66,44 @@ python toolbox.py undo-transfer restore \
 
 ## Transfer Log Format
 
-Undo Transfer parses logs with the following formats:
+Undo Transfer parses logs that include an original path and a checksum.
 
 ### Windows-Style Paths
 ```
-C:\Users\Alice\Documents\report.pdf -> C:\Temp\file001.tmp
-C:\Users\Alice\Photos\vacation.jpg -> C:\Temp\file002.tmp
+C:\Users\Alice\Documents\report.pdf | MD5: d41d8cd98f00b204e9800998ecf8427e
+C:\Users\Alice\Photos\vacation.jpg | SHA256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
 ### Unix-Style Paths
 ```
-/Users/alice/Documents/report.pdf -> /tmp/file001.tmp
-/Users/alice/Photos/vacation.jpg -> /tmp/file002.tmp
+/Users/alice/Documents/report.pdf | MD5: d41d8cd98f00b204e9800998ecf8427e
+/Users/alice/Photos/vacation.jpg | SHA256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
 ### Mixed Formats (Safe Cross-Platform)
 The parser normalizes path separators automatically:
 ```
-C:\Users\Alice\Documents\report.pdf -> /tmp/file001.tmp
+C:\Users\Alice\Documents\report.pdf | SHA256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
 ## How It Works
 
 ### Restoration Process
 
-1. **Parse Log**: Extract original paths and temp file mappings
+1. **Parse Log**: Extract original paths and hashes
 2. **Scan Temp Directory**: Find all files in the temporary directory
 3. **Hash Files**: Compute checksums for all temp files (multi-threaded)
 4. **Match Hashes**: Compare temp file hashes with log entries
-5. **Restore**: Copy files to original paths, creating directories as needed
+5. **Restore**: Move files to original paths, creating directories as needed
 
 ### Hash Matching Algorithm
 
 ```python
-log_entry = {"original_path": "/docs/report.pdf", "temp_path": "/tmp/file001.tmp"}
+log_entry = {"original_path": "/docs/report.pdf", "hash_type": "md5", "hash": "…"}
 temp_file_hash = compute_hash("/actual/temp/dir/file001.tmp")
 
-if temp_file_hash == log_entry_hash:
-    copy("/actual/temp/dir/file001.tmp", "/restore/docs/report.pdf")
+if temp_file_hash == log_entry["hash"]:
+    move("/actual/temp/dir/file001.tmp", "/restore/docs/report.pdf")
 ```
 
 ### Duplicate Hash Handling
@@ -116,6 +120,7 @@ If multiple temp files have the same hash:
 Adjust hashing parallelization:
 ```bash
 python toolbox.py undo-transfer \
+  --mode cli \
   --log transfer.log \
   --temp /temp \
   --restore /output \
@@ -127,11 +132,12 @@ Default is 8 threads. Increase for SSDs, decrease for HDDs.
 
 ### MD5 Cache
 
-Undo Transfer caches MD5 hashes in `<temp_dir>/.md5_cache.json` to speed up re-runs:
+Undo Transfer caches hashes in `<temp_dir>/md5_cache.json` to speed up re-runs:
 
 **Enable cache (default for MD5):**
 ```bash
 python toolbox.py undo-transfer \
+  --mode cli \
   --log transfer.log \
   --temp /temp \
   --restore /output \
@@ -139,25 +145,16 @@ python toolbox.py undo-transfer \
   --commit
 ```
 
-**Disable cache:**
-```bash
-python toolbox.py undo-transfer \
-  --log transfer.log \
-  --temp /temp \
-  --restore /output \
-  --hash md5 \
-  --commit
-```
+*Note: There is no `--no-cache` flag in this implementation.*
 
-*Note: MD5 cache is always used when available; there's no --no-cache flag in this implementation.*
-
-Cache is automatically disabled for SHA-256 (different hash algorithm).
+The cache can store both MD5 and SHA-256 values when they are computed.
 
 ### Force Overwrite
 
-By default, restoration skips existing files. To overwrite:
+If a destination path already exists, there is no dedicated overwrite/force flag in this implementation.
 ```bash
 python toolbox.py undo-transfer \
+  --mode cli \
   --log transfer.log \
   --temp /temp \
   --restore /output \
@@ -183,6 +180,7 @@ After accidentally flattening a directory structure:
 
 # Restore with transfer log
 python toolbox.py undo-transfer \
+  --mode cli \
   --log flatten_log.txt \
   --temp /temp \
   --restore /photos_restored \
@@ -194,6 +192,7 @@ python toolbox.py undo-transfer \
 After a batch rename operation with log:
 ```bash
 python toolbox.py undo-transfer \
+  --mode cli \
   --log rename_log.txt \
   --temp /renamed_files \
   --restore /original_structure \
@@ -208,6 +207,7 @@ Restore files after cloud sync flattened folder structure:
 # Get transfer log from sync software
 
 python toolbox.py undo-transfer \
+  --mode cli \
   --log sync_log.txt \
   --temp /downloads \
   --restore /cloud_restored \
@@ -219,30 +219,30 @@ python toolbox.py undo-transfer \
 ### Minimum Requirements
 
 Transfer logs must:
-1. Contain `->` separator between original and temp paths
-2. Have at least one path pair per line
-3. Use consistent path format (Windows or Unix)
+1. Contain a `|` separator between the original path and the hash
+2. Include either `MD5:` or `SHA256:` (or a bare hex digest)
+3. Use a consistent original path root that matches your configured `ORIGINAL_ROOT`
 
 ### Example Valid Logs
 
 **Simple format:**
 ```
-/original/path/file.txt -> /temp/abc123.tmp
-/original/other/doc.pdf -> /temp/def456.tmp
+/original/path/file.txt | MD5: d41d8cd98f00b204e9800998ecf8427e
+/original/other/doc.pdf | SHA256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
 **With timestamps:**
 ```
-2024-01-15 10:30:45 | /original/path/file.txt -> /temp/abc123.tmp
-2024-01-15 10:31:12 | /original/other/doc.pdf -> /temp/def456.tmp
+2024-01-15 10:30:45 | /original/path/file.txt | MD5: d41d8cd98f00b204e9800998ecf8427e
+2024-01-15 10:31:12 | /original/other/doc.pdf | SHA256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
 **With extra metadata (ignored):**
 ```
-[INFO] Transferring: /original/path/file.txt -> /temp/abc123.tmp (1.2 MB)
+[INFO] Hashed: /original/path/file.txt | MD5: d41d8cd98f00b204e9800998ecf8427e (1.2 MB)
 ```
 
-The parser extracts paths on either side of `->` and ignores extra text.
+The parser extracts the original path on the left and the hash on the right, and ignores extra text.
 
 ## Troubleshooting
 
@@ -297,22 +297,24 @@ The parser extracts paths on either side of `->` and ignores extra text.
 
 ## Configuration
 
-Settings are stored in `config/undo_transfer.json`:
+Settings are stored in `config/undo_transfer.json` (created/updated on first run). The persisted keys mirror the tool’s internal settings, for example:
 
 ```json
 {
-  "default_hash_algorithm": "sha256",
-  "default_threads": 8,
-  "enable_md5_cache": true,
-  "cache_file_name": ".md5_cache.json",
-  "overwrite_existing": false
+  "LOG_FILE": "./transfer.log",
+  "TEMP_DIRECTORY": "/tmp/files",
+  "ORIGINAL_ROOT": "C:/Users/Alice/Pictures",
+  "RESTORE_ROOT": "/output/restored",
+  "TARGET_SUBFOLDERS": ["LPictures"],
+  "AUTO_SCAN_SUBFOLDERS": true,
+  "DRY_RUN": true,
+  "THREAD_COUNT": 8,
+  "HASH_TYPE": "sha256",
+  "UNDO_LOG": "/tmp/files/undo_transfer.log",
+  "CACHE_FILE": "/tmp/files/md5_cache.json",
+  "INTERACTIVE_MODE": true
 }
 ```
-
-**Key settings:**
-- `default_hash_algorithm`: `"md5"` or `"sha256"`
-- `enable_md5_cache`: Speed up MD5 re-runs
-- `overwrite_existing`: Allow overwriting files in restore directory
 
 ## GUI Mode
 
@@ -352,7 +354,7 @@ The GUI provides:
 3. Hasher → Compute hashes (multi-threaded, GIL-releasing)
 4. Matcher → Map temp_hash → original_path
 5. Restorer → Copy temp_file → original_path
-6. Cache → Store MD5 hashes for future runs
+6. Cache → Store hashes for future runs
 ```
 
 ### Threading Model
@@ -361,7 +363,7 @@ Undo Transfer uses `ThreadPoolExecutor` for hashing:
 - **Log parsing**: Single-threaded (fast, CPU-light)
 - **Directory scanning**: Single-threaded (I/O bound)
 - **Hashing**: Multi-threaded (`hashlib` releases GIL)
-- **File copying**: Single-threaded (filesystem limitation)
+- **File moving**: Single-threaded-ish (filesystem limitation)
 
 Threading is optimal because:
 - `hashlib` releases the GIL during hash computation
@@ -373,32 +375,24 @@ Threading is optimal because:
 Import Undo Transfer modules for programmatic use:
 
 ```python
-from plugins.undo_transfer import log_parser, restorer, md5_cache
+from plugins.undo_transfer.restorer import UndoWorker
 
-# Parse log
-entries = log_parser.parse_log("transfer.log")
-print(f"Found {len(entries)} entries")
+settings = {
+  "LOG_FILE": "./transfer.log",
+  "TEMP_DIRECTORY": "/tmp/files",
+  "ORIGINAL_ROOT": "C:/Users/Alice/Pictures",
+  "RESTORE_ROOT": "/output/restored",
+  "TARGET_SUBFOLDERS": ["LPictures"],
+  "DRY_RUN": True,
+  "THREAD_COUNT": 8,
+  "HASH_TYPE": "sha256",
+  "UNDO_LOG": "/tmp/files/undo_transfer.log",
+  "CACHE_FILE": "/tmp/files/md5_cache.json",
+}
 
-# Build temp file mapping
-cache = md5_cache.MD5Cache("/temp", enabled=True)
-temp_map = restorer.build_temp_hash_map(
-    temp_dir="/temp",
-    hash_algorithm="md5",
-    threads=8,
-    cache=cache,
-)
-
-# Restore files
-stats = restorer.restore_files(
-    log_entries=entries,
-    temp_map=temp_map,
-    restore_dir="/output",
-    dry_run=False,
-)
-
-print(f"Restored: {stats['restored']}")
-print(f"Skipped: {stats['skipped']}")
-print(f"Failed: {stats['failed']}")
+worker = UndoWorker(settings)
+worker.start()
+worker.join()
 ```
 
 ## Related Tools
